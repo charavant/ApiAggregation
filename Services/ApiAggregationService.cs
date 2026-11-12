@@ -99,6 +99,7 @@ namespace ApiAggregation.Services
         providers = providers.Where(provider => provider.SectionName != this.worldBank.SectionName);
       }
 
+      // Start each provider before awaiting the group. Update the response dictionaries afterward.
       var sectionTasks = providers.Select(async provider =>
       {
         var (data, status) = await this.GetSectionAsync(provider, countryContext, cancellationToken);
@@ -145,6 +146,7 @@ namespace ApiAggregation.Services
 
       if (this.memoryCache.TryGetValue<TimeZoneInfo>(timeZoneKey, out var timeZone) && timeZone is not null)
       {
+        // The capital's calendar day can change before or after the server's day.
         var localNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, timeZone);
         var localDate = DateOnly.FromDateTime(localNow.DateTime);
 
@@ -175,7 +177,7 @@ namespace ApiAggregation.Services
       var cacheKey = (sectionName, code);
       var freshFor = TimeSpan.FromHours(24);
 
-      // Keep the last successful value beyond its freshness window.
+      // Keep the last successful value beyond its freshness window for use after a failed refresh.
       var retainFor = sectionName == "country" ? TimeSpan.FromDays(7) : TimeSpan.FromHours(25);
 
       if (this.memoryCache.TryGetValue<(Object Data, DateTimeOffset FetchedAt)>(cacheKey, out var cached) && DateTimeOffset.UtcNow - cached.FetchedAt < freshFor)

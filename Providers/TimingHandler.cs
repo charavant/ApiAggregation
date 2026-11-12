@@ -25,6 +25,7 @@ namespace ApiAggregation.Providers
       }
       finally
       {
+        // Record each attempt through this handler, including failures and cancellations.
         this.statistics.Record(this.providerName, stopwatch.Elapsed.TotalMilliseconds);
       }
     }

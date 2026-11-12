@@ -43,6 +43,8 @@ builder.Services.AddMemoryCache();
 
 var app = builder.Build();
 
+// Load coordinates before serving requests so the three providers can start together.
+// A failed load leaves the dictionary empty and the service resolves countries individually.
 try
 {
   using var scope = app.Services.CreateScope();

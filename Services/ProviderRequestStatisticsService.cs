@@ -36,6 +36,7 @@ namespace ApiAggregation.Services
 
     public IReadOnlyDictionary<String, ProviderRequestStatistics> GetSnapshot()
     {
+      // Take the snapshot under the same lock as writes so totals match their buckets.
       lock (this.syncRoot)
       {
         var snapshot = new Dictionary<String, ProviderRequestStatistics>();
