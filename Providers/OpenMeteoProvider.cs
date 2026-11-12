@@ -19,6 +19,22 @@ namespace ApiAggregation.Providers
     #region Start Of: Methods
     public async Task<Object> FetchAsync(CountryContext country, CancellationToken cancellationToken)
     {
+      // Simulate an outage for Greece to test the API's error handling.
+      //if (country.Code == "GR")
+      //{
+      //  throw new HttpRequestException("Simulated Open-Meteo outage.", null, System.Net.HttpStatusCode.ServiceUnavailable);
+      //}
+
+      // Simulate an outage vol 2 for Greece to test the API's error handling.
+      //var outageFile = Path.Combine(Path.GetTempPath(), "apiaggregation-weather-offline.flag");
+      //if (country.Code == "GR" && File.Exists(outageFile))
+      //{
+      //  throw new HttpRequestException(
+      //    "Simulated Open-Meteo outage.",
+      //    null,
+      //    System.Net.HttpStatusCode.ServiceUnavailable);
+      //}
+
       // Query strings use a decimal point regardless of Windows regional settings.
       var location = FormattableString.Invariant(
         $"latitude={country.Latitude}&longitude={country.Longitude}");

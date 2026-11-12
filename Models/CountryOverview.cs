@@ -14,6 +14,8 @@ namespace ApiAggregation.Models
     public String CountryCode { get; init; }
 
     public IReadOnlyDictionary<String, Object> Sections { get; init; }
+
+    public IReadOnlyDictionary<String, String> SectionStatuses { get; init; } = new Dictionary<String, String>();
     #endregion End Of: Properties
   }
 }

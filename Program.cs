@@ -62,7 +62,12 @@ app.MapGet("/api/countries/{code}", async (String code, ApiAggregationService ag
 
   var (overview, error) = await LookupCountryAsync(normalizedCode, aggregationService, cancellationToken);
 
-  return error ?? Results.Ok(overview);
+  if (error is not null)
+  {
+    return error;
+  }
+
+  return overview!.Sections.Count == 0 ? Results.Json(overview, statusCode: 503) : Results.Ok(overview);
 });
 
 app.MapGet("/api/countries", async (String? codes, String? sections, String? sort, String? order, ApiAggregationService aggregationService, CancellationToken cancellationToken) =>
@@ -122,13 +127,14 @@ app.MapGet("/api/countries", async (String? codes, String? sections, String? sor
 
   var response = sortedCountries
     .ThenBy(country => country.CountryCode, StringComparer.Ordinal)
-    .Select(country => new CountryOverview(
-      country.CountryCode,
-      country.Sections.Where(section => selectedSections.Contains(section.Key))
-        .ToDictionary(section => section.Key, section => section.Value)))
+    .Select(country => country with
+    {
+      Sections = country.Sections.Where(section => selectedSections.Contains(section.Key)).ToDictionary(section => section.Key, section => section.Value),
+      SectionStatuses = country.SectionStatuses.Where(section => selectedSections.Contains(section.Key)).ToDictionary(section => section.Key, section => section.Value)
+    })
     .ToArray();
 
-  return Results.Ok(response);
+  return response.All(country => country.Sections.Count == 0) ? Results.Json(response, statusCode: 503) : Results.Ok(response);
 });
 
 app.Run();
@@ -169,7 +175,7 @@ static async Task<(CountryOverview? Overview, IResult? Error)> LookupCountryAsyn
 
 static String GetCountryName(CountryOverview country)
 {
-  return ((CountryData)country.Sections["country"]).Name;
+  return country.Sections.TryGetValue("country", out var section) && section is CountryData profile ? profile.Name : country.CountryCode;
 }
 
 static Double? GetTemperature(CountryOverview country)
