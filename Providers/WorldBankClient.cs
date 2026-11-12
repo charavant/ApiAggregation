@@ -4,7 +4,7 @@ using ApiAggregation.Models;
 
 namespace ApiAggregation.Providers
 {
-  public sealed class WorldBankClient
+  public sealed class WorldBankClient : ICountrySectionProvider
   {
     #region Start Of: Constructors
     public WorldBankClient(HttpClient httpClient)
@@ -12,6 +12,10 @@ namespace ApiAggregation.Providers
       this.httpClient = httpClient;
     }
     #endregion End Of: Constructors
+
+    #region Start Of: Properties
+    public String SectionName => "country";
+    #endregion End Of: Properties
 
     #region Start Of: Methods
     public async Task<CountryData?> GetCountryAsync(string code, CancellationToken cancellationToken)
@@ -98,6 +102,45 @@ namespace ApiAggregation.Providers
       }
 
       return null;
+    }
+
+    public async Task<Object> FetchAsync(CountryContext country, CancellationToken cancellationToken)
+    {
+      return await this.GetCountryAsync(country.Code, cancellationToken) ?? throw new InvalidDataException($"World Bank did not return the profile for {country.Code}.");
+    }
+
+    public async Task<IReadOnlyDictionary<String, CountryContext>> GetCapitalCatalogAsync(CancellationToken cancellationToken)
+    {
+      using var response = await this.httpClient.GetAsync("v2/country?format=json&per_page=400", cancellationToken);
+      response.EnsureSuccessStatusCode();
+
+      await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+      using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
+
+      var root = document.RootElement;
+
+      if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() != 2 || root[1].ValueKind != JsonValueKind.Array)
+      {
+        throw new InvalidDataException("World Bank returned an invalid capital catalog.");
+      }
+
+      var catalog = new Dictionary<String, CountryContext>(StringComparer.OrdinalIgnoreCase);
+
+      foreach (var row in root[1].EnumerateArray())
+      {
+        var code = ReadText(row, "iso2Code");
+        var capital = ReadText(row, "capitalCity");
+
+        if (code is { Length: 2 }
+          && !String.IsNullOrWhiteSpace(capital)
+          && ReadCoordinate(row, "latitude", 90) is Double latitude
+          && ReadCoordinate(row, "longitude", 180) is Double longitude)
+        {
+          catalog[code] = new CountryContext(code, latitude, longitude);
+        }
+      }
+
+      return catalog;
     }
     #endregion End Of: Methods
 

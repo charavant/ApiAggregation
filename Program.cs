@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ApiAggregation.Models;
 using ApiAggregation.Providers;
+using ApiAggregation.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,64 +24,159 @@ builder.Services.AddHttpClient<SunriseSunsetProvider>(client =>
 
 builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<OpenMeteoProvider>());
 builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<SunriseSunsetProvider>());
+builder.Services.AddTransient<ApiAggregationService>();
+
+builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<WorldBankClient>());
+var capitalDictionary = new Dictionary<String, CountryContext>(StringComparer.OrdinalIgnoreCase);
+builder.Services.AddSingleton<IReadOnlyDictionary<String, CountryContext>>(capitalDictionary);
+
 var app = builder.Build();
 
-app.MapGet("/api/countries/{code}", async (String code, WorldBankClient worldBank, IEnumerable<ICountrySectionProvider> sectionProviders, CancellationToken cancellationToken) =>
+try
+{
+  using var scope = app.Services.CreateScope();
+  var worldBank = scope.ServiceProvider.GetRequiredService<WorldBankClient>();
+  var startupCatalog = await worldBank.GetCapitalCatalogAsync(CancellationToken.None);
+
+  foreach (var entry in startupCatalog)
+  {
+    capitalDictionary.Add(entry.Key, entry.Value);
+  }
+
+  app.Logger.LogInformation("Loaded capital coordinates for {Count} countries.", capitalDictionary.Count);
+}
+catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException or OperationCanceledException)
+{
+  app.Logger.LogWarning(exception, "Could not load capital coordinates. Using per-country lookups.");
+}
+
+app.MapGet("/api/countries/{code}", async (String code, ApiAggregationService aggregationService, CancellationToken cancellationToken) =>
 {
   var normalizedCode = code.ToUpperInvariant();
 
-  if (normalizedCode.Length != 2 || normalizedCode.Any(letter => letter is < 'A' or > 'Z'))
+  if (!IsCountryCode(normalizedCode))
   {
     return Results.BadRequest(new { message = "Use a two-letter country code." });
   }
 
-  try
-  {
-    var country = await worldBank.GetCountryAsync(normalizedCode, cancellationToken);
+  var (overview, error) = await LookupCountryAsync(normalizedCode, aggregationService, cancellationToken);
 
-    if (country is null)
+  return error ?? Results.Ok(overview);
+});
+
+app.MapGet("/api/countries", async (String? codes, String? sections, String? sort, String? order, ApiAggregationService aggregationService, CancellationToken cancellationToken) =>
+{
+  var countryCodes = (codes ?? String.Empty)
+    .Split(',', StringSplitOptions.TrimEntries)
+    .Select(code => code.ToUpperInvariant())
+    .Distinct(StringComparer.Ordinal)
+    .ToArray();
+
+  if (countryCodes.Length > 5 || countryCodes.Any(code => !IsCountryCode(code)))
+  {
+    return Results.BadRequest(new { message = "Supply one to five distinct two-letter country codes." });
+  }
+
+  var sortKey = (sort ?? "name").Trim().ToLowerInvariant();
+  var sortOrder = (order ?? "asc").Trim().ToLowerInvariant();
+
+  if (sortKey is not ("name" or "temperature") || sortOrder is not ("asc" or "desc"))
+  {
+    return Results.BadRequest(new { message = "Use sort=name or temperature and order=asc or desc." });
+  }
+
+  var availableSections = aggregationService.SectionNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+  var selectedSections = sections is null ? availableSections : sections.Split(',', StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+  if (!selectedSections.IsSubsetOf(availableSections))
+  {
+    return Results.BadRequest(new { message = "Use section names from the available sections.", availableSections });
+  }
+
+  var countries = new List<CountryOverview>();
+
+  foreach (var code in countryCodes)
+  {
+    var (overview, error) = await LookupCountryAsync(code, aggregationService, cancellationToken);
+
+    if (error is not null)
     {
-      return Results.NotFound(new { message = $"Unknown country code: {normalizedCode}." });
+      return error;
     }
 
-    var sections = new Dictionary<string, object>
+    if (overview is not null)
     {
-      ["country"] = country
-    };
-
-    if (country.Latitude is not Double latitude || country.Longitude is not Double longitude)
-    {
-      return Results.Problem(title: "Capital coordinates are unavailable", statusCode: 422);
+      countries.Add(overview);
     }
-
-    var countryContext = new CountryContext(normalizedCode, latitude, longitude);
-
-    // Start every provider before waiting for the results.
-    var sectionTasks = sectionProviders.Select(async provider =>
-    {
-      var data = await provider.FetchAsync(countryContext, cancellationToken);
-      return (Name: provider.SectionName, Data: data);
-    }).ToArray();
-
-    var providerSections = await Task.WhenAll(sectionTasks);
-
-    // Add sections after the calls finish so the dictionary is updated in one place.
-    foreach (var section in providerSections)
-    {
-      sections[section.Name] = section.Data;
-    }
-
-    return Results.Ok(new CountryOverview(normalizedCode, sections));
   }
-  catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+
+  // Sort full overviews before choosing which sections to return.
+  var sortedCountries = (sortKey, sortOrder) switch
   {
-    return Results.Problem(title: "World Bank timed out", statusCode: 504);
-  }
-  catch (Exception exception) when (
-      exception is HttpRequestException or JsonException or InvalidDataException)
-  {
-    return Results.Problem(title: "World Bank lookup failed", statusCode: 502);
-  }
+    ("name", "asc") => countries.OrderBy(GetCountryName, StringComparer.OrdinalIgnoreCase),
+    ("name", "desc") => countries.OrderByDescending(GetCountryName, StringComparer.OrdinalIgnoreCase),
+    ("temperature", "asc") => countries.OrderBy(country => GetTemperature(country) is null).ThenBy(GetTemperature),
+    _ => countries.OrderBy(country => GetTemperature(country) is null).ThenByDescending(GetTemperature)
+  };
+
+  var response = sortedCountries
+    .ThenBy(country => country.CountryCode, StringComparer.Ordinal)
+    .Select(country => new CountryOverview(
+      country.CountryCode,
+      country.Sections.Where(section => selectedSections.Contains(section.Key))
+        .ToDictionary(section => section.Key, section => section.Value)))
+    .ToArray();
+
+  return Results.Ok(response);
 });
 
 app.Run();
+
+static Boolean IsCountryCode(String code)
+{
+  return code.Length == 2 && code.All(letter => letter is >= 'A' and <= 'Z');
+}
+
+static async Task<(CountryOverview? Overview, IResult? Error)> LookupCountryAsync(String code, ApiAggregationService aggregationService, CancellationToken cancellationToken)
+{
+  try
+  {
+    var (overview, missingCoordinates) = await aggregationService.GetAsync(code, cancellationToken);
+
+    if (missingCoordinates)
+    {
+      return (null, Results.Problem(title: $"Capital coordinates are unavailable for {code}", statusCode: 422));
+    }
+
+    if (overview is null)
+    {
+      return (null, Results.NotFound(new { message = $"Unknown country code: {code}." }));
+    }
+
+    return (overview, null);
+  }
+  catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+  {
+    return (null, Results.Problem(title: $"Country overview lookup timed out for {code}", statusCode: 504));
+  }
+  catch (Exception exception) when (
+    exception is HttpRequestException or JsonException or InvalidDataException)
+  {
+    return (null, Results.Problem(title: $"Country overview lookup failed for {code}", statusCode: 502));
+  }
+}
+
+static String GetCountryName(CountryOverview country)
+{
+  return ((CountryData)country.Sections["country"]).Name;
+}
+
+static Double? GetTemperature(CountryOverview country)
+{
+  if (country.Sections.TryGetValue("weather", out var section) && section is WeatherData weather)
+  {
+    return weather.TemperatureCelsius;
+  }
+
+  return null;
+}
