@@ -23,6 +23,8 @@ namespace ApiAggregation.Models
     public Int32? DaylightSeconds { get; init; }
 
     public String SourceUrl { get; init; }
+
+    internal String? TimeZoneId { get; init; }
     #endregion End Of: Properties
   }
 }

@@ -58,7 +58,11 @@ namespace ApiAggregation.Providers
       var sunrise = ReadEventTime(root, "sunrise");
       var sunset = ReadEventTime(root, "sunset");
 
-      return new DaylightData(date, sunrise, sunset, daylightSeconds, "https://sunrise-sunset.org/");
+      var timeZoneId = root.TryGetProperty("tzid", out var timeZoneValue) && timeZoneValue.ValueKind == JsonValueKind.String ? timeZoneValue.GetString() : null;
+      return new DaylightData(date, sunrise, sunset, daylightSeconds, "https://sunrise-sunset.org/")
+      {
+        TimeZoneId = timeZoneId
+      };
     }
 
     private static DateTimeOffset? ReadEventTime(JsonElement root, String propertyName)

@@ -29,6 +29,7 @@ builder.Services.AddTransient<ApiAggregationService>();
 builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<WorldBankClient>());
 var capitalDictionary = new Dictionary<String, CountryContext>(StringComparer.OrdinalIgnoreCase);
 builder.Services.AddSingleton<IReadOnlyDictionary<String, CountryContext>>(capitalDictionary);
+builder.Services.AddMemoryCache();
 
 var app = builder.Build();
 
