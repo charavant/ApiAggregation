@@ -5,22 +5,32 @@ using ApiAggregation.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+const String worldBankName = "World Bank";
+const String openMeteoName = "Open-Meteo";
+const String sunriseSunsetName = "Sunrise-Sunset";
+
+builder.Services.AddSingleton(new ProviderRequestStatisticsService(new[] { worldBankName, openMeteoName, sunriseSunsetName }));
+
 builder.Services.AddHttpClient<WorldBankClient>(client =>
 {
   client.BaseAddress = new Uri("https://api.worldbank.org/");
   client.Timeout = TimeSpan.FromSeconds(10);
-});
+})
+.AddHttpMessageHandler(services => new TimingHandler(worldBankName, services.GetRequiredService<ProviderRequestStatisticsService>()));
+
 builder.Services.AddHttpClient<OpenMeteoProvider>(client =>
 {
   client.BaseAddress = new Uri("https://api.open-meteo.com/");
   client.Timeout = TimeSpan.FromSeconds(10);
-});
+})
+.AddHttpMessageHandler(services => new TimingHandler(openMeteoName, services.GetRequiredService<ProviderRequestStatisticsService>()));
 
 builder.Services.AddHttpClient<SunriseSunsetProvider>(client =>
 {
   client.BaseAddress = new Uri("https://api.sunrise-sunset.org/");
   client.Timeout = TimeSpan.FromSeconds(10);
-});
+})
+.AddHttpMessageHandler(services => new TimingHandler(sunriseSunsetName, services.GetRequiredService<ProviderRequestStatisticsService>()));
 
 builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<OpenMeteoProvider>());
 builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetRequiredService<SunriseSunsetProvider>());
@@ -136,6 +146,8 @@ app.MapGet("/api/countries", async (String? codes, String? sections, String? sor
 
   return response.All(country => country.Sections.Count == 0) ? Results.Json(response, statusCode: 503) : Results.Ok(response);
 });
+
+app.MapGet("/api/stats", (ProviderRequestStatisticsService statisticsService) => Results.Ok(statisticsService.GetSnapshot()));
 
 app.Run();
 
