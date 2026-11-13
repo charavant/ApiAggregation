@@ -5,8 +5,9 @@ namespace ApiAggregation.Services
   public sealed class ProviderRequestStatisticsService
   {
     #region Start Of: Constructors
-    public ProviderRequestStatisticsService(IEnumerable<String> providerNames)
+    public ProviderRequestStatisticsService(IEnumerable<String> providerNames, TimeProvider? timeProvider = null)
     {
+      this.timeProvider = timeProvider ?? TimeProvider.System;
       this.providerBuckets = providerNames.ToDictionary(name => name, _ => new (Int64 Count, Double TotalMilliseconds)[bucketNames.Length]);
     }
     #endregion End Of: Constructors
@@ -31,6 +32,16 @@ namespace ApiAggregation.Services
 
         var bucket = buckets[bucketIndex];
         buckets[bucketIndex] = (bucket.Count + 1, bucket.TotalMilliseconds + elapsedMilliseconds);
+
+        if (!this.recentRequests.TryGetValue(providerName, out var requests))
+        {
+          requests = new Queue<(DateTimeOffset, Double)>();
+          this.recentRequests.Add(providerName, requests);
+        }
+
+        var now = this.timeProvider.GetUtcNow();
+        requests.Enqueue((now, elapsedMilliseconds));
+        RemoveExpiredRequests(requests, now - recentWindow);
       }
     }
 
@@ -63,9 +74,58 @@ namespace ApiAggregation.Services
       }
     }
 
+    public IReadOnlyDictionary<String, ProviderPerformanceWindow> GetPerformanceWindows()
+    {
+      lock (this.syncRoot)
+      {
+        var cutoff = this.timeProvider.GetUtcNow() - recentWindow;
+        var snapshot = new Dictionary<String, ProviderPerformanceWindow>();
+
+        foreach (var (providerName, buckets) in this.providerBuckets)
+        {
+          var totalCount = buckets.Sum(bucket => bucket.Count);
+          var totalMilliseconds = buckets.Sum(bucket => bucket.TotalMilliseconds);
+
+          Int64 recentCount = 0;
+          Double recentMilliseconds = 0;
+
+          if (this.recentRequests.TryGetValue(providerName, out var requests))
+          {
+            RemoveExpiredRequests(requests, cutoff);
+            recentCount = requests.Count;
+            recentMilliseconds = requests.Sum(request => request.ElapsedMilliseconds);
+          }
+
+          var baselineCount = totalCount - recentCount;
+          var baselineMilliseconds = totalMilliseconds - recentMilliseconds;
+
+          snapshot.Add(providerName, new ProviderPerformanceWindow(
+            recentCount,
+            CalculateAverage(recentCount, recentMilliseconds),
+            baselineCount,
+            CalculateAverage(baselineCount, baselineMilliseconds)));
+        }
+
+        return snapshot;
+      }
+    }
+
+    private static Double? CalculateAverage(Int64 count, Double totalMilliseconds)
+    {
+      return count == 0 ? null : totalMilliseconds / count;
+    }
+
     private static Double? GetAverage(Int64 count, Double totalMilliseconds)
     {
       return count == 0 ? null : Math.Round(totalMilliseconds / count, 2);
+    }
+
+    private static void RemoveExpiredRequests(Queue<(DateTimeOffset RecordedAt, Double ElapsedMilliseconds)> requests, DateTimeOffset cutoff)
+    {
+      while (requests.TryPeek(out var request) && request.RecordedAt < cutoff)
+      {
+        requests.Dequeue();
+      }
     }
     #endregion End Of: Methods
 
@@ -73,7 +133,14 @@ namespace ApiAggregation.Services
     private static readonly String[] bucketNames = { "fast", "average", "slow" };
 
     private readonly Object syncRoot = new();
+
+    private readonly TimeProvider timeProvider;
+
     private readonly Dictionary<String, (Int64 Count, Double TotalMilliseconds)[]> providerBuckets;
+
+    private static readonly TimeSpan recentWindow = TimeSpan.FromMinutes(5);
+
+    private readonly Dictionary<String, Queue<(DateTimeOffset RecordedAt, Double ElapsedMilliseconds)>> recentRequests = new();
     #endregion End Of: Fields
   }
 }

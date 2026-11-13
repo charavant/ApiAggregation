@@ -2,8 +2,18 @@ using System.Text.Json;
 using ApiAggregation.Models;
 using ApiAggregation.Providers;
 using ApiAggregation.Services;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+var logPath = Path.Combine(builder.Environment.ContentRootPath, "logs", "log-.txt");
+builder.Services.AddSerilog((context, configuration) =>
+{
+  configuration
+    .MinimumLevel.Information()
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(logPath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 7);
+});
 
 const String worldBankName = "World Bank";
 const String openMeteoName = "Open-Meteo";
@@ -40,6 +50,7 @@ builder.Services.AddTransient<ICountrySectionProvider>(services => services.GetR
 var capitalDictionary = new Dictionary<String, CountryContext>(StringComparer.OrdinalIgnoreCase);
 builder.Services.AddSingleton<IReadOnlyDictionary<String, CountryContext>>(capitalDictionary);
 builder.Services.AddMemoryCache();
+builder.Services.AddHostedService<ProviderPerformanceMonitorService>();
 
 var app = builder.Build();
 
