@@ -2,11 +2,14 @@ using System.Text.Json;
 using ApiAggregation.Models;
 using ApiAggregation.Providers;
 using ApiAggregation.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ASP.NET Core and the performance worker share the same console and rolling-file logger.
 var logPath = Path.Combine(builder.Environment.ContentRootPath, "logs", "log-.txt");
-builder.Services.AddSerilog((context, configuration) =>
+builder.Services.AddSerilog((_, configuration) =>
 {
   configuration
     .MinimumLevel.Information()
@@ -52,6 +55,11 @@ builder.Services.AddSingleton<IReadOnlyDictionary<String, CountryContext>>(capit
 builder.Services.AddMemoryCache();
 builder.Services.AddHostedService<ProviderPerformanceMonitorService>();
 
+// The Bearer scheme loads its issuer, audience, and signing keys from configuration.
+// During local development, dotnet user-jwts stores the signing key in User Secrets.
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
 
 // Load coordinates before serving requests so the three providers can start together.
@@ -74,7 +82,21 @@ catch (Exception exception) when (exception is HttpRequestException or JsonExcep
   app.Logger.LogWarning(exception, "Could not load capital coordinates. Using per-country lookups.");
 }
 
-app.MapGet("/api/countries/{code}", async (String code, ApiAggregationService aggregationService, CancellationToken cancellationToken) =>
+// Both groups use the same handlers, cache, and provider statistics.
+MapApiRoutes(app.MapGroup("/api").AllowAnonymous());
+MapApiRoutes(app.MapGroup("/api/secure").RequireAuthorization());
+
+app.Run();
+
+static void MapApiRoutes(RouteGroupBuilder routes)
+{
+  routes.MapGet("/countries/{code}", GetCountryAsync);
+  routes.MapGet("/countries", GetCountriesAsync);
+  routes.MapGet("/stats", (ProviderRequestStatisticsService statisticsService) =>
+    Results.Ok(statisticsService.GetSnapshot()));
+}
+
+static async Task<IResult> GetCountryAsync(String code, ApiAggregationService aggregationService, CancellationToken cancellationToken)
 {
   var normalizedCode = code.ToUpperInvariant();
 
@@ -91,9 +113,9 @@ app.MapGet("/api/countries/{code}", async (String code, ApiAggregationService ag
   }
 
   return overview!.Sections.Count == 0 ? Results.Json(overview, statusCode: 503) : Results.Ok(overview);
-});
+}
 
-app.MapGet("/api/countries", async (String? codes, String? sections, String? sort, String? order, ApiAggregationService aggregationService, CancellationToken cancellationToken) =>
+static async Task<IResult> GetCountriesAsync(String? codes, String? sections, String? sort, String? order, ApiAggregationService aggregationService, CancellationToken cancellationToken)
 {
   var countryCodes = (codes ?? String.Empty)
     .Split(',', StringSplitOptions.TrimEntries)
@@ -158,11 +180,7 @@ app.MapGet("/api/countries", async (String? codes, String? sections, String? sor
     .ToArray();
 
   return response.All(country => country.Sections.Count == 0) ? Results.Json(response, statusCode: 503) : Results.Ok(response);
-});
-
-app.MapGet("/api/stats", (ProviderRequestStatisticsService statisticsService) => Results.Ok(statisticsService.GetSnapshot()));
-
-app.Run();
+}
 
 static Boolean IsCountryCode(String code)
 {

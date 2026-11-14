@@ -7,6 +7,7 @@ namespace ApiAggregation.Services
     #region Start Of: Constructors
     public ProviderRequestStatisticsService(IEnumerable<String> providerNames, TimeProvider? timeProvider = null)
     {
+      // Tests can move the clock forward without waiting for the window to expire.
       this.timeProvider = timeProvider ?? TimeProvider.System;
       this.providerBuckets = providerNames.ToDictionary(name => name, _ => new (Int64 Count, Double TotalMilliseconds)[bucketNames.Length]);
     }
@@ -22,6 +23,7 @@ namespace ApiAggregation.Services
         _ => 2
       };
 
+      // Update the cumulative buckets and recent queue together so a snapshot sees both.
       lock (this.syncRoot)
       {
         if (!this.providerBuckets.TryGetValue(providerName, out var buckets))
@@ -91,11 +93,13 @@ namespace ApiAggregation.Services
 
           if (this.recentRequests.TryGetValue(providerName, out var requests))
           {
+            // Expire old samples here too, since idle providers have no new writes to trim the queue.
             RemoveExpiredRequests(requests, cutoff);
             recentCount = requests.Count;
             recentMilliseconds = requests.Sum(request => request.ElapsedMilliseconds);
           }
 
+          // Subtract the recent samples so a slowdown cannot raise its own baseline.
           var baselineCount = totalCount - recentCount;
           var baselineMilliseconds = totalMilliseconds - recentMilliseconds;
 
@@ -112,6 +116,7 @@ namespace ApiAggregation.Services
 
     private static Double? CalculateAverage(Int64 count, Double totalMilliseconds)
     {
+      // The monitor uses full precision for its threshold comparison.
       return count == 0 ? null : totalMilliseconds / count;
     }
 
